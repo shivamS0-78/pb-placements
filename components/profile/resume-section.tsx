@@ -8,6 +8,7 @@ import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle} from "@/components/ui/dialog";
 import { supabase } from "@/lib/supabaseClient";
 import { useToast } from "@/hooks/use-toast";
+import { useRouter } from "next/navigation";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -181,6 +182,7 @@ export function ResumeSection({ resumeUrl, isEditable, userId, displayFileName }
   const [loading, setLoading] = useState(true);
   const [uploading, setUploading] = useState(false);
   const { toast } = useToast();
+  const router = useRouter();
 
   useEffect(() => {
     if (isEditable) {
@@ -228,15 +230,16 @@ export function ResumeSection({ resumeUrl, isEditable, userId, displayFileName }
       setResumeFiles(filesWithUrls);
 
       const latestResume = filesWithUrls[0];
-      if (latestResume) {
-        await supabase
-          .from('members')
-          .update({ resume_url: latestResume.publicUrl })
-          .eq('id', id);
-      }
+      await supabase
+        .from('members')
+        .update({ resume_url: latestResume ? latestResume.publicUrl : null })
+        .eq('id', id);
+      return filesWithUrls;
     }
+    return [];
   } catch (error) {
     console.error('Error fetching resume files:', error);
+    return [];
   } finally {
     setLoading(false);
   }
@@ -313,6 +316,8 @@ export function ResumeSection({ resumeUrl, isEditable, userId, displayFileName }
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
 
+      const isLatest = resumeFiles.length > 0 && fileName === resumeFiles[0].name;
+
       const { error } = await supabase.storage
         .from('resume')
         .remove([`resumes/${user.id}/${fileName}`]);
@@ -326,7 +331,40 @@ export function ResumeSection({ resumeUrl, isEditable, userId, displayFileName }
         description: "Resume deleted successfully",
       });
 
-      await fetchResumeFiles();
+      const updatedFiles = await fetchResumeFiles();
+
+      if (isLatest && updatedFiles && updatedFiles.length > 0) {
+        const newLatest = updatedFiles[0];
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        toast({
+          title: "Processing new latest resume",
+          description: "Syncing your profile details to the new latest resume version...",
+        });
+
+        const reparseRes = await fetch('/api/resume/reparse', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${session?.access_token}`,
+          },
+          body: JSON.stringify({ filePath: `resumes/${user.id}/${newLatest.name}` }),
+        });
+
+        if (reparseRes.ok) {
+          const parsedData = await reparseRes.json();
+          localStorage.setItem('reparsed_resume', JSON.stringify(parsedData));
+          router.push(`/upload/confirm?edit=true&memberId=${user.id}`);
+        } else {
+          const errorBody = await reparseRes.json().catch(() => ({}));
+          console.error('Reparse failed:', reparseRes.status, errorBody);
+          toast({
+            title: "Profile not updated",
+            description: errorBody.message || "Could not reparse the next resume version. The file was deleted but your profile details were not updated.",
+            variant: "destructive",
+          });
+        }
+      }
       
     } catch (error) {
       toast({
@@ -361,8 +399,21 @@ export function ResumeSection({ resumeUrl, isEditable, userId, displayFileName }
     return `v${resumeFiles.length - index}`;
   };
 
+  if (!isEditable && !resumeUrl) {
+    return (
+      <div className="p-6">
+        <h2 className="text-2xl font-semibold mb-6">Resume</h2>
+        <div className="flex flex-col items-center justify-center py-8 text-center text-muted-foreground">
+          <FileText className="h-10 w-10 mb-3 opacity-40" />
+          <p className="text-sm">No resume uploaded yet.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (!isEditable && resumeUrl) {
-    const proxyUrl = userId ? `/api/resume/view/${userId}` : resumeUrl;
+    const cacheBuster = resumeUrl ? encodeURIComponent(resumeUrl.split('/').pop() || '') : '';
+    const proxyUrl = userId ? `/api/resume/view/${userId}?v=${cacheBuster}` : resumeUrl;
     return (
       <div className="p-6">
         <h2 className="text-2xl font-semibold mb-6">Resume</h2>
@@ -456,12 +507,12 @@ export function ResumeSection({ resumeUrl, isEditable, userId, displayFileName }
 
                     <div className="flex items-center gap-2">
                       <ResumeModal 
-                        resumeUrl={userId ? `/api/resume/view/${userId}` : file.publicUrl}
+                        resumeUrl={userId ? `/api/resume/view/${userId}?filename=${file.name}` : file.publicUrl}
                         displayName={displayFileName || file.name}
                       />
                       
                       <Button variant="ghost" size="sm" asChild>
-                        <a href={userId ? `/api/resume/view/${userId}` : file.publicUrl} download={displayFileName || file.name}>
+                        <a href={userId ? `/api/resume/view/${userId}?filename=${file.name}` : file.publicUrl} download={displayFileName || file.name}>
                           <Download className="h-4 w-4" />
                         </a>
                       </Button>
