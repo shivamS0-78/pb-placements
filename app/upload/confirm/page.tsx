@@ -166,7 +166,32 @@ function ConfirmPageContent() {
     await setExistingMemberId(memberId);
 
     if (editMode && memberId) {
-      await loadExistingProfile(memberId);
+      const reparsed = localStorage.getItem('reparsed_resume');
+      if (reparsed) {
+        try {
+          const parsedData = JSON.parse(reparsed);
+          // Fetch DB profile silently (don't populate form yet) to get picture_url etc.
+          const existingProfile = await loadExistingProfile(memberId, true);
+          const mergedData = {
+            ...existingProfile,
+            ...parsedData,
+            picture_url: existingProfile?.picture_url || parsedData.picture_url,
+            resume_url: parsedData.resume_url || existingProfile?.resume_url,
+          };
+          populateFormAndParsedData(mergedData, memberId);
+          if (existingProfile?.picture_url || parsedData.picture_url) {
+            setPicturePreview(existingProfile?.picture_url || parsedData.picture_url);
+          }
+          localStorage.removeItem('reparsed_resume');
+          setLoading(false);
+        } catch (e) {
+          console.error('Error parsing reparsed_resume from localStorage:', e);
+          // Fall through to load existing profile normally
+          await loadExistingProfile(memberId);
+        }
+      } else {
+        await loadExistingProfile(memberId);
+      }
       return;
     }
 
@@ -226,7 +251,7 @@ function ConfirmPageContent() {
   init();
 }, [router, searchParams]);
 
-  const loadExistingProfile = async (memberId: string) => {
+  const loadExistingProfile = async (memberId: string, skipPopulate = false) => {
     try {
       const [
         memberRes,
@@ -247,11 +272,11 @@ function ConfirmPageContent() {
       if (!memberRes.ok) throw new Error('Failed to load member data');
 
       const memberData = await memberRes.json();
-      const skillsData = await skillsRes.ok ? await skillsRes.json() : [];
-      const experiencesData = await experiencesRes.ok ? await experiencesRes.json() : [];
-      const achievementsData = await achievementsRes.ok ? await achievementsRes.json() : [];
-      const linksData = await linksRes.ok ? await linksRes.json() : [];
- const certificationsData = await certificationsRes.ok ? await certificationsRes.json() : [];
+      const skillsData = skillsRes.ok ? await skillsRes.json() : [];
+      const experiencesData = experiencesRes.ok ? await experiencesRes.json() : [];
+      const achievementsData = achievementsRes.ok ? await achievementsRes.json() : [];
+      const linksData = linksRes.ok ? await linksRes.json() : [];
+      const certificationsData = certificationsRes.ok ? await certificationsRes.json() : [];
 
       const combinedData = {
         ...memberData,
@@ -259,16 +284,18 @@ function ConfirmPageContent() {
         experiences: experiencesData,
         achievements: achievementsData,
         links: linksData,
-           certifications: certificationsData,
-     
+        certifications: certificationsData,
       };
 
-      populateFormAndParsedData(combinedData, memberId);
-      if (memberData.picture_url) {
-        setPicturePreview(memberData.picture_url);
+      if (!skipPopulate) {
+        populateFormAndParsedData(combinedData, memberId);
+        if (memberData.picture_url) {
+          setPicturePreview(memberData.picture_url);
+        }
+        setLoading(false);
       }
 
-      setLoading(false);
+      return combinedData;
     } catch (error) {
       console.error('Error loading existing profile:', error);
       toast({
